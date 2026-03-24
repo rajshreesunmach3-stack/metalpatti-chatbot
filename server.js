@@ -1,84 +1,90 @@
 require('dotenv').config();
 const express = require('express');
 const path = require('path');
-const app = express();
+const { Pinecone } = require('@pinecone-database/pinecone');
 
+const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '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';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+const PINECONE_API_KEY = process.env.PINECONE_API_KEY;
 const PORT = process.env.PORT || 3000;
+const INDEX_NAME = 'metalpatti';
 
-const SYSTEM_PROMPT = `You are a friendly and knowledgeable sales assistant for MetalPatti, a premium stainless steel decorative profiles manufacturer based in Pune, India.
-
-COMPANY INFO:
-- Name: MetalPatti (by FeCuNi)
-- Established: 2016
-- Location: S-29, Parvati Industrial Estate, Pune-Satara Road, Pune 411009, Maharashtra, India
-- Phone/WhatsApp: +91 8805606363
-- Email: sales@metalpatti.com
-- Tagline: "Quality Beyond Measure"
-- 250+ products, 750+ satisfied clients, 10+ European & Japanese machines
-
-PRODUCT CATEGORIES:
-1. T Profiles – Decorative trim for tiles and floors
-2. U Profiles – Modern wall and panel accents
-3. Transition Profiles – Trim for level differences between surfaces
-4. Tile Edging Profiles – Corner protection for tiles
-5. Corner Protection Profiles – L-shaped wall corner trim
-6. Skirting Profiles – Base trim for walls
-7. Stair Nosing Profiles – Anti-slip edge protection for stairs
-8. Decorative Sheets – Stainless steel decorative sheets
-9. Custom Profiles – Tailor-made solutions for specific needs
-
-MATERIALS & FINISHES:
-- Material: Premium Stainless Steel
-- Special Coating: PVD (Physical Vapor Deposition) coating
-- Available Finishes: Gold, Rose Gold, Black, Silver/Brushed, Mirror finish
-- Protective Films: 70-micron Novacel laser film + 30-micron quality film for scratch protection
-
-MANUFACTURING:
-- Advanced V-grooving machines
-- 7-axis Amada press brake for precision
-- Inventory of up to 10,000 PVD-coated stainless steel sheets
-- Strict dimensional accuracy and supervised handling
-
-USE CASES:
-- Interior wall cladding and decorative accents
-- Bathroom and kitchen tile edging
-- Flooring transitions between rooms
-- Staircase edge protection
-- Skirting boards
-- Corner guards in commercial and residential spaces
-- Hotels, offices, showrooms, luxury homes
-
-HOW TO RESPOND:
-- Be warm, helpful and conversational
-- Give detailed, useful answers — don't cut answers too short
-- If asked about specific products, explain what they are and where they're used
-- If asked about finishes, list all available options with use case suggestions
-- If asked about installation, give general guidance
-- If asked about pricing or bulk orders, say: "Prices vary based on size, finish & quantity. Contact us on WhatsApp: +91 8805606363 or email sales@metalpatti.com for a quote."
-- If asked for contact info, always share: Phone/WhatsApp +91 8805606363, Email: sales@metalpatti.com
-- Never make up specific prices or dimensions
-- Always suggest the user contact the team for custom requirements`;
+const pc = new Pinecone({ apiKey: PINECONE_API_KEY });
 
 const CATALOG_KEYWORDS = ['catalog', 'brochure', 'price list', 'designs'];
-const PRICING_KEYWORDS = ['price', 'cost', 'rate'];
+const PRICING_KEYWORDS = ['price', 'cost', 'rate', 'how much'];
 
 function containsKeyword(message, keywords) {
   const lower = message.toLowerCase();
   return keywords.some(kw => lower.includes(kw));
 }
 
+async function searchPinecone(query) {
+  try {
+    const index = pc.index(INDEX_NAME).namespace('products');
+    const results = await index.searchRecords({
+      query: { inputs: { text: query }, topK: 4 },
+      fields: ['chunk_text', 'category']
+    });
+    return results.result?.hits?.map(h => h.fields?.chunk_text).filter(Boolean).join('\n\n') || '';
+  } catch (err) {
+    console.error('Pinecone error:', err.message);
+    return '';
+  }
+}
+
+async function askAI(userMessage, context) {
+  const systemPrompt = `You are a friendly and knowledgeable sales assistant for MetalPatti, a premium stainless steel decorative profiles manufacturer based in Pune, India.
+
+Use the context below to answer the user's question accurately. If the context is relevant, use it. If not, use your general knowledge about MetalPatti.
+
+CONTEXT FROM KNOWLEDGE BASE:
+${context}
+
+GUIDELINES:
+- Be warm, helpful, and conversational
+- Give detailed and useful answers
+- Always suggest contacting the team for pricing, bulk orders, or custom requirements
+- Contact: WhatsApp/Phone +91 8805606363 | Email: sales@metalpatti.com
+- Never make up specific prices or dimensions
+- If asked for contact info, always share it`;
+
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'anthropic/claude-3-haiku',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    console.error('OpenRouter error:', err);
+    throw new Error('AI service error');
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content?.trim();
+}
+
 app.post('/chat', async (req, res) => {
   const { message } = req.body;
 
   if (!message || typeof message !== 'string') {
-    return res.status(400).json({ error: 'message is required and must be a string' });
+    return res.status(400).json({ error: 'message is required' });
   }
 
-  // Catalog logic — no AI call needed
+  // Catalog intent
   if (containsKeyword(message, CATALOG_KEYWORDS)) {
     return res.json({
       reply: "Here's our Metalpatti catalog 👇",
@@ -86,38 +92,17 @@ app.post('/chat', async (req, res) => {
     });
   }
 
-  // Pricing logic — no AI call needed
+  // Pricing intent
   if (containsKeyword(message, PRICING_KEYWORDS)) {
     return res.json({
-      reply: 'Prices vary based on product type, finish, size & quantity. For an accurate quote, contact us:\n📞 WhatsApp: +91 8805606363\n📧 Email: sales@metalpatti.com\nOur team will get back to you quickly!'
+      reply: 'Prices vary based on product type, finish, size & quantity.\n\n📞 WhatsApp: +91 8805606363\n📧 Email: sales@metalpatti.com\n\nOur team will get back to you quickly with the best quote!'
     });
   }
 
-  // AI fallback via OpenRouter
+  // RAG: search Pinecone + ask AI
   try {
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'anthropic/claude-3-haiku',
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: message }
-        ]
-      })
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      console.error('OpenRouter error:', err);
-      return res.status(502).json({ error: 'AI service unavailable. Please try again.' });
-    }
-
-    const data = await response.json();
-    const reply = data.choices?.[0]?.message?.content?.trim();
+    const context = await searchPinecone(message);
+    const reply = await askAI(message, context);
 
     if (!reply) {
       return res.status(502).json({ error: 'Empty response from AI.' });
@@ -126,7 +111,7 @@ app.post('/chat', async (req, res) => {
     return res.json({ reply });
   } catch (err) {
     console.error('Server error:', err.message);
-    return res.status(500).json({ error: 'Internal server error.' });
+    return res.status(500).json({ error: 'Something went wrong. Please try again.' });
   }
 });
 
