@@ -5,7 +5,7 @@ const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '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';
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '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';
 const PORT = process.env.PORT || 3000;
 
 const SYSTEM_PROMPT = `You are a friendly and knowledgeable sales assistant for MetalPatti, a premium stainless steel decorative profiles manufacturer based in Pune, India.
