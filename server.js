@@ -1,7 +1,9 @@
 const express = require('express');
+const path = require('path');
 const app = express();
 
 app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || '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';
 const PORT = process.env.PORT || 3000;
